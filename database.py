@@ -18,6 +18,44 @@ logger = logging.getLogger(__name__)
 # Database Initialization
 # ============================================================================
 
+def run_migrations(conn: sqlite3.Connection):
+    """
+    Run database schema migrations.
+    
+    Args:
+        conn: SQLite database connection
+    """
+    logger.info("Running database migrations...")
+    
+    # Inspect current observers columns once
+    try:
+        cursor = conn.execute("PRAGMA table_info(observers)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        # Migration 1: Add iata column to observers table
+        if 'iata' not in columns:
+            logger.info("Adding iata column to observers table")
+            conn.execute("ALTER TABLE observers ADD COLUMN iata TEXT")
+            conn.commit()
+            logger.info("Migration complete: iata column added")
+        else:
+            logger.debug("iata column already exists in observers table")
+
+        # Migration 2: Add status column to observers table
+        if 'status' not in columns:
+            logger.info("Adding status column to observers table")
+            conn.execute("ALTER TABLE observers ADD COLUMN status TEXT")
+            conn.commit()
+            logger.info("Migration complete: status column added")
+        else:
+            logger.debug("status column already exists in observers table")
+    except Exception as e:
+        logger.error("Error in migration: %s", e, exc_info=True)
+        raise
+    
+    logger.info("All migrations complete")
+
+
 def init_db(db_path: str) -> sqlite3.Connection:
     """
     Initialize database, create tables if needed, and set PRAGMAs.
@@ -52,6 +90,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
             name TEXT NOT NULL,
             radio TEXT,
             client_version TEXT,
+            iata TEXT,
+            status TEXT,
             first_seen REAL NOT NULL,
             last_seen REAL NOT NULL
         )
@@ -73,6 +113,9 @@ def init_db(db_path: str) -> sqlite3.Connection:
     
     conn.commit()
     logger.info("Database tables created/verified")
+    
+    # Run migrations for existing databases
+    run_migrations(conn)
     
     return conn
 
@@ -164,8 +207,8 @@ class DatabaseWriter:
         
         Args:
             db_path: Path to SQLite database file
-            batch_size: Max messages per batch before commit
-            batch_timeout: Max seconds to wait before commit (if batch not full)
+            batch_size: Max messages per batch before commit (default from config [database].batch_size)
+            batch_timeout: Max seconds to wait before commit if batch not full (default from config [database].batch_timeout)
         """
         self.db_path = db_path
         self.batch_size = batch_size
@@ -329,6 +372,7 @@ class DatabaseWriter:
     def _insert_observer(self, data: Dict[str, Any]):
         """
         Insert or update observer record.
+        Updates if any field (name, radio, client_version, iata, status) changes.
         
         Args:
             data: Observer data from JSON
@@ -342,32 +386,51 @@ class DatabaseWriter:
         if not pubkey:
             raise ValueError("Missing origin_id in observer data")
         
-        # Try to insert, if exists then update
-        try:
-            self.conn.execute("""
-                INSERT INTO observers (pubkey, name, radio, client_version, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                pubkey,
-                data.get('origin', ''),
-                data.get('radio'),
-                data.get('client_version'),
-                now,
-                now
-            ))
-        except sqlite3.IntegrityError:
-            # Already exists, update instead
-            self.conn.execute("""
-                UPDATE observers
-                SET name = ?, radio = ?, client_version = ?, last_seen = ?
-                WHERE pubkey = ?
-            """, (
-                data.get('origin', ''),
-                data.get('radio'),
-                data.get('client_version'),
-                now,
-                pubkey
-            ))
+        # Extract topic data
+        topic_data = data.get('_topic_data', {})
+        iata = topic_data.get('iata', '').upper()
+
+        # Parse observer status from status JSON
+        raw_status = data.get('status')
+        normalized_status = str(raw_status).lower() if raw_status is not None else None
+        status = normalized_status if normalized_status in ('online', 'offline') else None
+        
+        # Upsert: insert if new, update if any field changed
+        self.conn.execute("""
+            INSERT INTO observers (pubkey, name, radio, client_version, iata, status, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pubkey) DO UPDATE SET
+                name = excluded.name,
+                radio = excluded.radio,
+                client_version = excluded.client_version,
+                iata = excluded.iata,
+                status = excluded.status,
+                last_seen = excluded.last_seen
+            WHERE name IS NOT excluded.name
+               OR radio IS NOT excluded.radio
+               OR client_version IS NOT excluded.client_version
+               OR iata IS NOT excluded.iata
+               OR status IS NOT excluded.status
+               OR (name IS NULL AND excluded.name IS NOT NULL)
+               OR (radio IS NULL AND excluded.radio IS NOT NULL)
+               OR (client_version IS NULL AND excluded.client_version IS NOT NULL)
+               OR (iata IS NULL AND excluded.iata IS NOT NULL)
+               OR (status IS NULL AND excluded.status IS NOT NULL)
+               OR (name IS NOT NULL AND excluded.name IS NULL)
+               OR (radio IS NOT NULL AND excluded.radio IS NULL)
+               OR (client_version IS NOT NULL AND excluded.client_version IS NULL)
+               OR (iata IS NOT NULL AND excluded.iata IS NULL)
+               OR (status IS NOT NULL AND excluded.status IS NULL)
+        """, (
+            pubkey,
+            data.get('origin', ''),
+            data.get('radio'),
+            data.get('client_version'),
+            iata,
+            status,
+            now,
+            now
+        ))
     
     def _insert_packet(self, data: Dict[str, Any]):
         """

@@ -84,6 +84,9 @@ async def handle_status_message(remote_name, topic_data, payload):
     try:
         parsed_payload = parse_json_payload(payload)
         
+        # Add topic data to payload for database insertion
+        parsed_payload['_topic_data'] = topic_data
+        
         # Enqueue to database writer
         if db_writer:
             await db_writer.enqueue_observer(parsed_payload)
@@ -177,11 +180,18 @@ def load_config():
         raise ValueError("No enabled [remote*] sections found in mirror.ini. "
                          "At least one remote must have enable=true")
 
+    # Load database settings
+    db_cfg = parser["database"] if parser.has_section("database") else None
+    db_batch_size = db_cfg.getint("batch_size", fallback=50) if db_cfg else 50
+    db_batch_timeout = db_cfg.getfloat("batch_timeout", fallback=30.0) if db_cfg else 30.0
+
     return {
         "REMOTES": remotes,
         "GLOBAL_LOG_LEVEL": log_level,
         "GLOBAL_TEST": test_mode,
         "GLOBAL_TEST_TOPIC": test_topic,
+        "DB_BATCH_SIZE": db_batch_size,
+        "DB_BATCH_TIMEOUT": db_batch_timeout,
     }
 
 
@@ -192,6 +202,8 @@ try:
     GLOBAL_LOG_LEVEL = settings["GLOBAL_LOG_LEVEL"]
     GLOBAL_TEST = settings["GLOBAL_TEST"]
     GLOBAL_TEST_TOPIC = settings["GLOBAL_TEST_TOPIC"]
+    DB_BATCH_SIZE = settings["DB_BATCH_SIZE"]
+    DB_BATCH_TIMEOUT = settings["DB_BATCH_TIMEOUT"]
     logger.info("Loaded %d remote broker config(s)", len(REMOTES))
     resolved_log_level = getattr(logging, str(GLOBAL_LOG_LEVEL).upper(), logging.INFO)
     logging.getLogger().setLevel(resolved_log_level)
@@ -200,6 +212,7 @@ try:
 except Exception as e:
     logger.error("Failed to load configuration: %s", e, exc_info=True)
     raise
+
 
 
 async def mirror_remote_broker(remote_cfg):
@@ -358,8 +371,8 @@ async def main():
 
     # Initialize and start database writer
     db_path = "meshcore.db"
-    logger.info("Initializing database: %s", db_path)
-    db_writer = database.DatabaseWriter(db_path=db_path, batch_size=50, batch_timeout=30.0)
+    logger.info("Initializing database: %s (batch_size=%d, batch_timeout=%.1fs)", db_path, DB_BATCH_SIZE, DB_BATCH_TIMEOUT)
+    db_writer = database.DatabaseWriter(db_path=db_path, batch_size=DB_BATCH_SIZE, batch_timeout=DB_BATCH_TIMEOUT)
     await db_writer.start()
 
     tasks = []

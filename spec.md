@@ -14,15 +14,18 @@ Design a fault-tolerant SQLite database to store MeshCore MQTT messages from two
 
 ## 1. FINALIZED Schema Design
 
-### 1.1 Status Table
+### 1.1 Observers Table
 Tracks device status updates with upsert logic (insert or update existing).
 
 ```sql
-CREATE TABLE status (
+CREATE TABLE observers (
     pubkey TEXT PRIMARY KEY,           -- origin_id (64-char hex, uppercase)
     name TEXT NOT NULL,                -- origin string (from "origin" field)
     radio TEXT,                        -- radio config (e.g., "927.875,62.5,7,5")
     client_version TEXT,               -- e.g., "pyMC_repeater/1.0.6.dev68+gded15ea43"
+    iata TEXT,                         -- 3-letter IATA code from topic (uppercase)
+    status TEXT,                       -- observer status from JSON: "online" or "offline"
+    N.B USELESS BECAUSE OFTEN WHEN A REPEATER GOES OFFLINE, STATUS REMAINS online. Use last_seen to determine status instead
     first_seen REAL NOT NULL,          -- Unix timestamp (UTC) of first insert
     last_seen REAL NOT NULL            -- Unix timestamp (UTC) of last update
 );
@@ -30,7 +33,12 @@ CREATE TABLE status (
 
 **Upsert Logic:**
 - On insert: `first_seen = last_seen = now()`
-- On update: Update `last_seen = now()`, preserve `first_seen`, update `name`, `radio`, `client_version`
+- On update: Preserve `first_seen`; update only when any non-key field changes (`name`, `radio`, `client_version`, `iata`, `status`), and set `last_seen = now()` when update occurs
+
+**Migration Strategy:**
+- Existing databases are migrated at startup via `run_migrations(conn)`
+- Migration example currently implemented: add `iata` to `observers` when missing
+- Migration example currently implemented: add `status` to `observers` when missing
 
 ---
 
@@ -231,13 +239,14 @@ version = (first_byte >> 6) & 0b00000011  # Bits 6-7
 ### 8.1 File Structure
 ```
 database.py          # All database logic
-  - init_db()        # Create tables, set PRAGMAs
-  - insert_status()  # Upsert status record
+    - init_db()        # Create tables, set PRAGMAs
+    - run_migrations() # Startup schema migrations
+    - insert_observer()# Upsert observer record
   - insert_packet()  # Insert packet (with validation)
   - DatabaseWriter   # Async queue-based writer class
   - parse_bits()     # Helper to extract route_type, payload_type, version
 
-ingestor.py          # MQTT handlers
+mqtt-mc-ingestor.py  # MQTT handlers
   - Imports database.py
   - Handlers enqueue messages to DatabaseWriter queue
   - Main spawns DatabaseWriter task alongside MQTT tasks
@@ -327,7 +336,8 @@ class DatabaseWriter:
 - ✅ Metrics logging every 60 seconds (insert rate, queue depth, DB size)
 - ✅ Graceful shutdown: SIGINT/SIGTERM handlers flush remaining queue
 - ✅ Bit field parsing (route_type, payload_type, version from raw[0:2])
-- ✅ Status upsert logic (insert new, update existing by pubkey)
+- ✅ Observer upsert logic (insert new, update existing by pubkey when any non-key field changes)
+- ✅ Startup migration support via `run_migrations()`
 - ✅ Packet validation with special handling for raw length mismatches
 
 **Validation behavior:**
@@ -376,8 +386,8 @@ async def _insert_batch(self, batch: list):
         
         for msg_type, data in batch:
             try:
-                if msg_type == 'status':
-                    self._insert_status(data)
+                if msg_type == 'observer':
+                    self._insert_observer(data)
                 elif msg_type == 'packet':
                     self._insert_packet(data)
             except Exception as e:
@@ -435,6 +445,7 @@ async def handle_status_message(remote_name, topic_data, payload):
     """Handle status message - enqueue to database."""
     try:
         parsed_payload = parse_json_payload(payload)
+        parsed_payload['_topic_data'] = topic_data
         
         if db_writer:
             await db_writer.enqueue_observer(parsed_payload)
@@ -476,16 +487,16 @@ async def handle_status_message(remote_name, topic_data, payload):
 
 Example log entry:
 ```
-[METRICS] packets=1234 status=56 queue_depth=23 db_size_mb=456.7 packet_rate=20.5/sec status_rate=0.9/sec
+[METRICS] packets=1234 observers=56 queue_depth=23 db_size_mb=456.7 packet_rate=20.5/sec observer_rate=0.9/sec
 ```
 
 Values logged:
 - `packets` - Total packets inserted since last metric log
-- `status` - Total status updateds since last metric log
+- `observers` - Total observers updated since last metric log
 - `queue_depth` - Current messages awaiting insertion (real-time)
 - `db_size_mb` - Current database file size in MB
 - `packet_rate` - Packets per second (calculated over metric period)
-- `status_rate` - Status updates per second (calculated over metric period)
+- `observer_rate` - Observer updates per second (calculated over metric period)
 
 ---
 
@@ -507,16 +518,17 @@ ORDER BY timestamp DESC
 LIMIT 100;
 ```
 
-### Query: Active devices (status updated in last hour)
+### Query: Active devices (observer updated in last hour)
 ```sql
 SELECT 
     pubkey, 
     name, 
     radio,
+    iata,
     client_version,
     datetime(last_seen, 'unixepoch') as last_seen,
     datetime(first_seen, 'unixepoch') as first_seen
-FROM status
+FROM observers
 WHERE last_seen > unixepoch('now', '-1 hour')
 ORDER BY last_seen DESC;
 ```
@@ -549,7 +561,7 @@ ORDER BY packet_count DESC;
 ```sql
 SELECT 
     (SELECT COUNT(*) FROM packets) as total_packets,
-    (SELECT COUNT(*) FROM status) as total_devices,
+    (SELECT COUNT(*) FROM observers) as total_devices,
     (SELECT datetime(MIN(timestamp), 'unixepoch') FROM packets) as oldest_packet,
     (SELECT datetime(MAX(timestamp), 'unixepoch') FROM packets) as newest_packet;
 ```
@@ -563,7 +575,7 @@ SELECT
 **What was implemented:**
 - ✅ `database.py` - Complete database module with DatabaseWriter class
 - ✅ `ingestor.py` - Updated MQTT handlers with database integration
-- ✅ SQLite schema with status and packets tables
+- ✅ SQLite schema with observers and packets tables
 - ✅ WAL mode for concurrent read support
 - ✅ Queue-based batch processing (50 messages or 30 seconds)
 - ✅ Graceful shutdown with signal handlers
