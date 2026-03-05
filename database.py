@@ -111,6 +111,14 @@ def init_db(db_path: str) -> sqlite3.Connection:
         )
     """)
     
+    # Create iata table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS iatas (
+            iata TEXT PRIMARY KEY,
+            added_at REAL NOT NULL
+        )
+    """)
+    
     conn.commit()
     logger.info("Database tables created/verified")
     
@@ -268,6 +276,45 @@ class DatabaseWriter:
     async def enqueue_packet(self, data: Dict[str, Any]):
         """Enqueue a packet message for insertion."""
         await self.queue.put(('packet', data))
+    
+    async def populate_iatas(self, iata_codes: list[str]):
+        """
+        Populate the iata table with IATA codes extracted from subscribed topics.
+        
+        Args:
+            iata_codes: List of IATA codes to insert
+        """
+        if not self.conn:
+            logger.error("Database connection not initialized")
+            return
+        
+        if not iata_codes:
+            logger.debug("No IATA codes to populate")
+            return
+        
+        try:
+            now = time.time()
+            inserted_count = 0
+            
+            for iata in iata_codes:
+                iata_upper = iata.upper()
+                try:
+                    self.conn.execute("""
+                        INSERT OR IGNORE INTO iatas (iata, added_at)
+                        VALUES (?, ?)
+                    """, (iata_upper, now))
+                    inserted_count += 1
+                except Exception as e:
+                    logger.error("Error inserting IATA %s: %s", iata, e)
+            
+            self.conn.commit()
+            logger.info("Populated iata table with %d codes", inserted_count)
+        except Exception as e:
+            logger.error("Error populating IATA table: %s", e, exc_info=True)
+            try:
+                self.conn.rollback()
+            except Exception as rollback_error:
+                logger.error("Error rolling back: %s", rollback_error)
     
     async def _process_loop(self):
         """Main processing loop - collects and batches messages."""

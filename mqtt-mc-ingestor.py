@@ -104,6 +104,28 @@ async def handle_status_message(remote_name, topic_data, payload):
             exc_info=True
         )
 
+def extract_iatas_from_topics(remotes: list) -> set:
+    """
+    Extract IATA codes from subscribed topics.
+    Topics are of the form meshcore/IATA/#
+    
+    Args:
+        remotes: List of remote configurations
+        
+    Returns:
+        Set of unique IATA codes
+    """
+    iatas = set()
+    for remote in remotes:
+        for topic, _ in remote.get("topics", []):
+            # Parse topic format: meshcore/IATA/#
+            parts = topic.split("/")
+            if len(parts) >= 2:
+                iata = parts[1].upper()
+                if iata != "#":  # Skip wildcard
+                    iatas.add(iata)
+    return iatas
+
 def load_config():
     parser = configparser.ConfigParser()
     config_path = Path(__file__).with_name("config.ini")
@@ -374,6 +396,14 @@ async def main():
     logger.info("Initializing database: %s (batch_size=%d, batch_timeout=%.1fs)", db_path, DB_BATCH_SIZE, DB_BATCH_TIMEOUT)
     db_writer = database.DatabaseWriter(db_path=db_path, batch_size=DB_BATCH_SIZE, batch_timeout=DB_BATCH_TIMEOUT)
     await db_writer.start()
+    
+    # Extract and populate IATA codes from subscribed topics
+    iatas = extract_iatas_from_topics(enabled_remotes)
+    if iatas:
+        logger.info("Populating IATA table with codes: %s", ", ".join(sorted(iatas)))
+        await db_writer.populate_iatas(list(iatas))
+    else:
+        logger.warning("No IATA codes found in topic subscriptions")
 
     tasks = []
     try:

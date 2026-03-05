@@ -69,6 +69,29 @@ CREATE TABLE packets (
 
 ---
 
+### 1.3 IATA Table
+Lookup table containing all configured IATA airport codes extracted from subscribed MQTT topics.
+
+```sql
+CREATE TABLE iatas (
+    iata TEXT PRIMARY KEY,             -- 3-letter IATA code (uppercase)
+    added_at REAL NOT NULL             -- Unix timestamp (UTC) when code was added
+);
+```
+
+**Population Strategy:**
+- Populated at startup by extracting IATA codes from all subscribed topics
+- Topics are of the form `meshcore/<IATA>/#` where `<IATA>` is a 3-letter airport code
+- Extraction happens before any message processing begins
+- Uses `INSERT OR IGNORE` to prevent duplicates safely
+
+**Purpose:**
+- Provides a canonical list of monitored airports
+- Can be used for lookups/validation of incoming packet data
+- Simplifies reporting and administrative queries
+
+---
+
 ## 2. Indexes Explanation & Decision
 
 ### What Indexes Do:
