@@ -513,6 +513,11 @@ class DatabaseWriter:
         
         # Parse bit fields from raw
         raw = data['raw'].upper()
+        if raw == '':
+            logger.warning("empty packet raw data for iata %s observer %s %s", iata, data['origin'], observer)
+            return
+        
+        route_type = payload_type = version = None
         route_type, payload_type, version = parse_raw_bits(raw)
         
         # Insert packet

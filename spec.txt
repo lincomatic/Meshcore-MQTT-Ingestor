@@ -1,0 +1,66 @@
+broker topics are of form
+1. meshcore/iata/pubkey/status
+2. meshcore/iata/pubkey/packets
+and the data are in json format
+IATA is a 3-letter upper case string
+pubkey is a 64-character hexadecimal string
+
+want to store the data in a sqlite database.
+make it as fault tolerant as possible
+if program crashes gracefully exit
+optimize: there can be multiple concurrent reader processes (less than 10), message rate <10000/minute
+
+status topic is json. sample data:
+{
+  "status": "online",
+  "timestamp": "2026-02-27T23:40:33.280069+00:00",
+  "origin": "C2D Console",
+  "origin_id": "C2D0F2FA3EE67F76F7221E81D8F07499BE57AE84A7CDCC234FA1CA63FA362314",
+  "radio": "927.875,62.5,7,5",
+  "client_version": "pyMC_repeater/1.0.6.dev68+gded15ea43"
+}
+
+packets topic is json. sample data:
+{
+  "origin": "W6DOQ G2 Pasadena MQTT",
+  "origin_id": "56CF12FAFC185FADDB2FEA32CDBE28584D491E9F26CA1C7BFC1C82EFF823012C",
+  "timestamp": "2026-02-27T15:42:07.552034",
+  "type": "PACKET",
+  "direction": "rx",
+  "time": "23:58:48",
+  "date": "27/2/2026",
+  "len": "162",
+  "packet_type": "5",
+  "route": "F",
+  "payload_len": "116",
+  "raw": "152C7C0172254DF639973F3D205AE035EC1F0EFE559EED4753B8BA7FE0025AE5FBE37B7D4BD72C7314783996785D58382A8445587A8AF610DE73B72E80DA9485193405C7F997335D01FB649898F70F24290F51710E592A239382812CC03E82949FC27F93C9C0D7E6D33609E38E1DAEA93F1C19A4BCFA6A8639FB4C5D4E607E8D9A455DF1BCC424F91386060E6B0C221F99DCA55FFF3145B60CA830C607DB955CECC7",
+  "duration": "731",
+  "hash": "ACD9BFC5219B24E4"
+}
+
+
+status table:
+name: origin string
+pubkey: origin_id (primary key, unique)
+radio: radio string
+first_seen: UTC when first inserted into table
+last_seen: UTC when updated if pubkey is already in the table
+
+packets table:
+timestamp: store UTC when message arrived (not from json)
+packet_type: 1 byte number
+route_type: from route: single letter can be 'F' or 'D'
+iata: 3 letters in upper case
+observer: 4 characters of pubkey in upper case
+raw: hex string of length payload_len. each letter is a hex digit, so every 2 letters constitutes a hex byte
+route_type: bits 0-1 of first byte of raw
+payload_type: bits 2-5 of first byte of raw
+version: bits 6-7 of first byte of raw
+
+validation of packets (don't store if bad packet)
+1) has raw data
+2) length of raw string is double payload_len
+
+put database code into a separate database.py file
+
+
