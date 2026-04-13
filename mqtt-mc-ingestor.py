@@ -142,6 +142,7 @@ def load_config():
     test_mode = parser.getboolean("global", "test", fallback=False)
     test_topic = global_cfg.get("test_topic", "test") if global_cfg else "test"
     test_topic = test_topic.strip("\"'")
+    db_path = global_cfg.get("dbpath", "meshcore.db") if global_cfg else "meshcore.db"
 
     remotes = []
     for section_name in parser.sections():
@@ -214,6 +215,7 @@ def load_config():
         "GLOBAL_TEST_TOPIC": test_topic,
         "DB_BATCH_SIZE": db_batch_size,
         "DB_BATCH_TIMEOUT": db_batch_timeout,
+        "DB_PATH": db_path,
     }
 
 
@@ -226,6 +228,7 @@ try:
     GLOBAL_TEST_TOPIC = settings["GLOBAL_TEST_TOPIC"]
     DB_BATCH_SIZE = settings["DB_BATCH_SIZE"]
     DB_BATCH_TIMEOUT = settings["DB_BATCH_TIMEOUT"]
+    DB_PATH = settings["DB_PATH"]
     logger.info("Loaded %d remote broker config(s)", len(REMOTES))
     resolved_log_level = getattr(logging, str(GLOBAL_LOG_LEVEL).upper(), logging.INFO)
     logging.getLogger().setLevel(resolved_log_level)
@@ -241,7 +244,7 @@ async def mirror_remote_broker(remote_cfg):
     """Connect to a remote broker  with automatic reconnection."""
     remote_name = remote_cfg["name"]
     logger.debug("[%s] mirror_remote_broker task started", remote_name)
-    
+
     if not remote_cfg["enabled"]:
         logger.info("[%s] Disabled by config (enable=false), skipping connection", remote_name)
         return
@@ -257,7 +260,7 @@ async def mirror_remote_broker(remote_cfg):
                 remote_cfg['use_websockets']
             )
             logger.debug("[%s] Connecting to %s:%s", remote_name, remote_cfg['host'], remote_cfg['port'])
-            
+
             # Build TLS parameters if needed (always needed when use_tls=true, even if insecure)
             tls_params = None
             if remote_cfg["use_tls"]:
@@ -282,12 +285,12 @@ async def mirror_remote_broker(remote_cfg):
                 tls_params=tls_params,
             ) as client:
                 logger.info("[%s] Connected to %s:%s", remote_name, remote_cfg['host'], remote_cfg['port'])
-                
+
                 # Subscribe to all configured topics
                 for topic, qos in remote_cfg["topics"]:
                     await client.subscribe(topic, qos)
                     logger.info("[%s] Subscribed to %s (qos=%d)", remote_name, topic, qos)
-                
+
                 # Listen for messages
                 async for message in client.messages:
                     # Convert topic to string if needed
@@ -313,7 +316,7 @@ async def mirror_remote_broker(remote_cfg):
                             await handle_status_message(remote_name, topic_data, message.payload)
                     except json.JSONDecodeError as e:
                         logger.error("[%s] Invalid JSON payload on %s: %s", remote_name, msg_topic, e)
-                    
+
         except aiomqtt.MqttError as e:
             logger.error(
                 "[%s] MQTT error: %s. Retrying in %ds...",
@@ -346,7 +349,7 @@ def setup_signal_handlers():
 
 
 async def main():
-    """Main coroutine that manages local broker connection and remote mirror tasks."""
+    """Main coroutine that manages remote broker tasks."""
     global db_writer
     
     logger.debug("[CONFIG] Remotes loaded: %d", len(REMOTES))
@@ -392,7 +395,7 @@ async def main():
         return
 
     # Initialize and start database writer
-    db_path = "meshcore.db"
+    db_path = DB_PATH
     logger.info("Initializing database: %s (batch_size=%d, batch_timeout=%.1fs)", db_path, DB_BATCH_SIZE, DB_BATCH_TIMEOUT)
     db_writer = database.DatabaseWriter(db_path=db_path, batch_size=DB_BATCH_SIZE, batch_timeout=DB_BATCH_TIMEOUT)
     await db_writer.start()

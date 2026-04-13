@@ -118,9 +118,14 @@ def init_db(db_path: str) -> sqlite3.Connection:
             added_at REAL NOT NULL
         )
     """)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_timestamp ON packets(timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_iata_timestamp ON packets(iata, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_observer_timestamp ON packets(observer, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_payload_type_timestamp ON packets(payload_type, timestamp)")
     
     conn.commit()
-    logger.info("Database tables created/verified")
+    logger.info("Database tables and indexes created/verified")
     
     # Run migrations for existing databases
     run_migrations(conn)
